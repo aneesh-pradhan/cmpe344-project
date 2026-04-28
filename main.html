@@ -674,6 +674,13 @@
 <script>
 const PAD_NAMES = ['Pad A', 'Pad B', 'Pad C', 'Pad D'];
 const PAD_COLORS = ['#185FA5', '#639922', '#BA7517', '#A32D2D'];
+const DEFAULT_DRUMS = [
+  { lightName: 'Kick low', heavyName: 'Kick high' },
+  { lightName: 'Snare low', heavyName: 'Snare high' },
+  { lightName: 'Hat low', heavyName: 'Hat high' },
+  { lightName: 'Tom low', heavyName: 'Tom high' },
+];
+const RELEASE_TIMEOUT_MS = 120;
 
 let port = null;
 let reader = null;
@@ -686,10 +693,10 @@ let pitchLight = 0;
 let pitchHeavy = 5;
 
 let padStates = [
-  { pressure: 0, mode: 'idle', lightSound: null, heavySound: null, lightName: null, heavyName: null, audioCtx: null, lastTrigger: 0 },
-  { pressure: 0, mode: 'idle', lightSound: null, heavySound: null, lightName: null, heavyName: null, audioCtx: null, lastTrigger: 0 },
-  { pressure: 0, mode: 'idle', lightSound: null, heavySound: null, lightName: null, heavyName: null, audioCtx: null, lastTrigger: 0 },
-  { pressure: 0, mode: 'idle', lightSound: null, heavySound: null, lightName: null, heavyName: null, audioCtx: null, lastTrigger: 0 },
+  { pressure: 0, mode: 'idle', lightSound: null, heavySound: null, lightName: null, heavyName: null, audioCtx: null, lastTrigger: 0, lastSeen: 0 },
+  { pressure: 0, mode: 'idle', lightSound: null, heavySound: null, lightName: null, heavyName: null, audioCtx: null, lastTrigger: 0, lastSeen: 0 },
+  { pressure: 0, mode: 'idle', lightSound: null, heavySound: null, lightName: null, heavyName: null, audioCtx: null, lastTrigger: 0, lastSeen: 0 },
+  { pressure: 0, mode: 'idle', lightSound: null, heavySound: null, lightName: null, heavyName: null, audioCtx: null, lastTrigger: 0, lastSeen: 0 },
 ];
 
 let pendingUpload = null;
@@ -699,6 +706,111 @@ function getAudioCtx() {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === 'suspended') audioCtx.resume();
   return audioCtx;
+}
+
+function ensurePlaceholderSounds(ctx = getAudioCtx()) {
+  padStates.forEach((pad, i) => {
+    if (!pad.lightSound) {
+      pad.lightSound = createDrumBuffer(ctx, i, false);
+      pad.lightName = DEFAULT_DRUMS[i].lightName;
+    }
+    if (!pad.heavySound) {
+      pad.heavySound = createDrumBuffer(ctx, i, true);
+      pad.heavyName = DEFAULT_DRUMS[i].heavyName;
+    }
+  });
+}
+
+function createDrumBuffer(ctx, padIdx, isHeavy) {
+  const sampleRate = ctx.sampleRate;
+  const duration = isHeavy ? 0.42 : 0.3;
+  const buffer = ctx.createBuffer(1, Math.floor(sampleRate * duration), sampleRate);
+  const data = buffer.getChannelData(0);
+  const rand = seededNoise((padIdx + 1) * 1000 + (isHeavy ? 97 : 31));
+  let phase = 0;
+
+  for (let n = 0; n < data.length; n++) {
+    const t = n / sampleRate;
+    let sample = 0;
+
+    if (padIdx === 0) {
+      const env = Math.exp(-t * (isHeavy ? 9 : 11));
+      const startFreq = isHeavy ? 130 : 95;
+      const endFreq = isHeavy ? 52 : 42;
+      const sweep = Math.exp(-t * 16);
+      const freq = endFreq + (startFreq - endFreq) * sweep;
+      phase += 2 * Math.PI * freq / sampleRate;
+      sample = Math.sin(phase) * env + rand() * Math.exp(-t * 90) * 0.18;
+    } else if (padIdx === 1) {
+      const noiseEnv = Math.exp(-t * (isHeavy ? 14 : 18));
+      const toneEnv = Math.exp(-t * 20);
+      const toneFreq = isHeavy ? 240 : 180;
+      phase += 2 * Math.PI * toneFreq / sampleRate;
+      sample = rand() * noiseEnv * 0.78 + Math.sin(phase) * toneEnv * 0.34;
+    } else if (padIdx === 2) {
+      const env = Math.exp(-t * (isHeavy ? 38 : 48));
+      const metallic = Math.sin(2 * Math.PI * (isHeavy ? 9200 : 6800) * t);
+      sample = (rand() * 0.72 + metallic * 0.28) * env;
+    } else {
+      const env = Math.exp(-t * (isHeavy ? 8 : 10));
+      const startFreq = isHeavy ? 290 : 210;
+      const endFreq = isHeavy ? 150 : 105;
+      const sweep = Math.exp(-t * 7);
+      const freq = endFreq + (startFreq - endFreq) * sweep;
+      phase += 2 * Math.PI * freq / sampleRate;
+      sample = Math.sin(phase) * env + rand() * Math.exp(-t * 25) * 0.08;
+    }
+
+    data[n] = Math.max(-1, Math.min(1, sample * (isHeavy ? 0.95 : 0.72)));
+  }
+
+  return buffer;
+}
+
+function seededNoise(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return (state / 2147483648) - 1;
+  };
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[ch]);
+}
+
+function soundSlotMarkup(padIdx, type) {
+  const pad = padStates[padIdx];
+  const isLight = type === 'light';
+  const name = isLight ? pad.lightName : pad.heavyName;
+  const label = isLight ? 'Light sound' : 'Heavy sound';
+  const tagClass = isLight ? 'light-tag' : 'heavy-tag';
+  const tagText = isLight ? 'L' : 'H';
+  const loadedClass = name ? ' loaded' : '';
+  const icon = name ? '♪' : '+';
+  const displayName = escapeHtml(name || label);
+
+  return `
+        <button class="sound-slot${loadedClass}" id="slot-${type}-${padIdx}" onclick="openUpload(${padIdx}, '${type}')">
+          <span class="sound-slot-icon">${icon}</span>
+          <span class="sound-slot-name">${displayName}</span>
+          <span class="sound-slot-type ${tagClass}">${tagText}</span>
+        </button>
+  `;
+}
+
+function updateSoundSlot(padIdx, type) {
+  const oldSlot = document.getElementById(`slot-${type}-${padIdx}`);
+  if (!oldSlot) return;
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = soundSlotMarkup(padIdx, type).trim();
+  oldSlot.replaceWith(wrapper.firstElementChild);
 }
 
 function buildPads() {
@@ -727,16 +839,8 @@ function buildPads() {
         </div>
       </div>
       <div class="sound-row">
-        <button class="sound-slot" id="slot-light-${i}" onclick="openUpload(${i}, 'light')">
-          <span class="sound-slot-icon">+</span>
-          <span class="sound-slot-name">Light sound</span>
-          <span class="sound-slot-type light-tag">L</span>
-        </button>
-        <button class="sound-slot" id="slot-heavy-${i}" onclick="openUpload(${i}, 'heavy')">
-          <span class="sound-slot-icon">+</span>
-          <span class="sound-slot-name">Heavy sound</span>
-          <span class="sound-slot-type heavy-tag">H</span>
-        </button>
+${soundSlotMarkup(i, 'light')}
+${soundSlotMarkup(i, 'heavy')}
       </div>
     `;
     grid.appendChild(el);
@@ -760,15 +864,11 @@ document.getElementById('file-input').addEventListener('change', async (e) => {
   if (type === 'light') {
     pad.lightSound = decoded;
     pad.lightName = shortName;
-    const slot = document.getElementById(`slot-light-${padIdx}`);
-    slot.classList.add('loaded');
-    slot.innerHTML = `<span class="sound-slot-icon">♪</span><span class="sound-slot-name">${shortName}</span><span class="sound-slot-type light-tag">L</span>`;
+    updateSoundSlot(padIdx, 'light');
   } else {
     pad.heavySound = decoded;
     pad.heavyName = shortName;
-    const slot = document.getElementById(`slot-heavy-${padIdx}`);
-    slot.classList.add('loaded');
-    slot.innerHTML = `<span class="sound-slot-icon">♪</span><span class="sound-slot-name">${shortName}</span><span class="sound-slot-type heavy-tag">H</span>`;
+    updateSoundSlot(padIdx, 'heavy');
   }
   logActivity('sys', `Pad ${padIdx} ${type} → ${shortName}`);
   e.target.value = '';
@@ -782,6 +882,7 @@ function semitoneRate(semitones) {
 function playSound(padIdx, isHeavy) {
   const pad = padStates[padIdx];
   const ctx = getAudioCtx();
+  ensurePlaceholderSounds(ctx);
   const buffer = isHeavy ? pad.heavySound : pad.lightSound;
   if (!buffer) return;
 
@@ -852,6 +953,7 @@ function parseLine(line) {
   const wasAbove = pad.pressure > threshold;
   const wasActive = pad.pressure > deadzone;
   pad.pressure = val;
+  pad.lastSeen = performance.now();
 
   updatePadUI(padIdx, val);
 
@@ -873,12 +975,26 @@ function parseLine(line) {
   }
 }
 
+setInterval(() => {
+  const now = performance.now();
+  padStates.forEach((pad, idx) => {
+    if (pad.pressure > deadzone && now - pad.lastSeen > RELEASE_TIMEOUT_MS) {
+      pad.pressure = 0;
+      updatePadUI(idx, 0);
+    }
+  });
+}, 30);
+
 async function connectSerial() {
   if (!navigator.serial) {
     alert('Web Serial API not available. Please use Chrome 89+ and ensure the page is served over HTTPS or localhost.');
     return;
   }
   try {
+    const ctx = getAudioCtx();
+    try { await ctx.resume(); } catch(e) {}
+    ensurePlaceholderSounds(ctx);
+
     port = await navigator.serial.requestPort();
     await port.open({ baudRate: 115200 });
     setConnected(true);
@@ -954,7 +1070,7 @@ function logActivity(type, msg) {
   const ts = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
   const line = document.createElement('div');
   line.className = 'log-line';
-  line.innerHTML = `<span class="log-time">${ts}</span><span class="log-tag ${type}">${type}</span><span class="log-msg">${msg}</span>`;
+  line.innerHTML = `<span class="log-time">${ts}</span><span class="log-tag ${type}">${type}</span><span class="log-msg">${escapeHtml(msg)}</span>`;
   log.appendChild(line);
   log.scrollTop = log.scrollHeight;
   if (log.children.length > 120) log.removeChild(log.firstChild);
