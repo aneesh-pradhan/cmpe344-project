@@ -1,0 +1,33 @@
+name: Compile sketch
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: arduino-cli (Mega 2560)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Arduino CLI 1.6.0
+        uses: arduino/setup-arduino-cli@v2
+        with:
+          version: 1.6.0
+
+      - name: Install Arduino AVR Boards 1.8.8
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr@1.8.8
+
+      - name: Compile fsr_music_box_mega for the Mega 2560
+        run: arduino-cli compile --fqbn arduino:avr:mega:cpu=atmega2560 fsr_music_box_mega

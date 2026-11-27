@@ -1,0 +1,9 @@
+# Pin the board and core used by `arduino-cli compile` and by CI.
+# Arduino IDE 2 reads default_fqbn when this sketch is opened.
+default_fqbn: arduino:avr:mega:cpu=atmega2560
+default_profile: mega2560
+profiles:
+  mega2560:
+    fqbn: arduino:avr:mega:cpu=atmega2560
+    platforms:
+      - platform: arduino:avr (1.8.8)
